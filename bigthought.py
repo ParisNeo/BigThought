@@ -39,38 +39,44 @@ tokenizer.fit_on_texts(words)
 
 # pad our sentences to get fixed size sentences
 maxlen = 100
-X = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(questions), padding='post', maxlen=maxlen)/len(words)
-y = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(answers), padding='post', maxlen=maxlen)/len(words)
+X = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(questions), padding='post', maxlen=maxlen)
+y = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(answers), padding='post', maxlen=maxlen)
 
 #Let's build our model
 def resbloc(h0):
-    h = tf.keras.layers.Dense(100)(h0)
+    h = tf.keras.layers.Dense(100,activation="relu")(h0)
     h = tf.keras.layers.BatchNormalization()(h)
-    h = tf.keras.layers.Dense(50,activation="tanh")(h)
-    h = tf.keras.layers.Dense(100)(h)
+    h = tf.keras.layers.Dense(50,activation="relu")(h)
+    h = tf.keras.layers.Dense(100,activation="relu")(h)
     h = tf.keras.layers.Concatenate()([h0,h])
     return h
 
 question = tf.keras.layers.Input(shape=(100,),name="Question")
 
 # input blocs
-h = tf.keras.layers.Dense(1000)(question)
+h = tf.keras.layers.Dense(1000,activation="relu")(question)
 # h = tf.keras.layers.Reshape((1000,1))(h)
 # h = tf.keras.layers.Conv1D(128, 5, activation='tanh')(h)
 #h = tf.keras.layers.GlobalMaxPooling1D()(h)
-h0 = tf.keras.layers.Dense(100,activation="tanh")(h)
+h0 = tf.keras.layers.Dense(100,activation="relu")(h)
 
 # Resblocs
 h = resbloc(h0)
+h = resbloc(h)
+h = resbloc(h)
+h = resbloc(h)
+h = resbloc(h)
+h = resbloc(h)
+h = resbloc(h)
 # Get as deep as you want ..
 
 # Final blocs
-h = tf.keras.layers.Dense(100,activation="tanh")(h)
+h = tf.keras.layers.Dense(100,activation="relu")(h)
 # Shortcut
 h = tf.keras.layers.Concatenate()([h,h0])
 h = tf.keras.layers.Dropout(0.25)(h)
-h = tf.keras.layers.Dense(1000)(h)
-answer = tf.keras.layers.Dense(100,activation="sigmoid", name="Answer")(h)
+h = tf.keras.layers.Dense(1000,activation="relu")(h)
+answer = tf.keras.layers.Dense(100,activation="relu", name="Answer")(h)
 
 model = tf.keras.models.Model(question, answer)
 #find an old model
@@ -84,7 +90,7 @@ if model_path.exists():
     model.load_weights(str(model_path))
     print("Weights loaded")
 model.summary()
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="mse")
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="mae")
 
 # Now let it learn for a long long long time it learns very slowly
 model.fit(X,y, batch_size=256, epochs=15)
@@ -93,10 +99,10 @@ model.fit(X,y, batch_size=256, epochs=15)
 model.save_weights(str(model_path))
 
 # Now it is our time to ask the ultimate question !
-question = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(["what is the the answer to life the universe and everything?"]), padding='post', maxlen=maxlen)/len(words)
+question = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(["what is the the answer to life the universe and everything?"]), padding='post', maxlen=maxlen)
 print(question)
-print(model.predict(question)*len(words))
-answer = (model.predict(question)*len(words)).astype(int)
+print(model.predict(question))
+answer = (model.predict(question)).astype(int)
 print(answer)
 txt = tokenizer.sequences_to_texts(answer)
 print(txt)
