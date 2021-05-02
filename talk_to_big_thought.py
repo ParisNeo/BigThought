@@ -17,20 +17,16 @@ import itertools
 import re
 from pathlib import Path
 
-# Fit or not fit? that's the question
-fit = False
-n_epochs = 2 # Depends on your PC hardware capability. More is best
-patience = 50
-maxlen = 100 # Maximum length of a sequence
+maxlen = 100
 
 data = json.load(open("data/train-v2.0.json","r"))
 
 #Lets extract raw questions and answers
-questions =  [data["data"][i]["paragraphs"][j]["qas"][k]["question"] for i in range(len(data["data"])) for j in range(len(data["data"][i]["paragraphs"])) for k in range(len(data["data"][i]["paragraphs"][j]["qas"])) for a in range(len(data["data"][i]["paragraphs"][j]["qas"][k]["answers"]))]
-answers =  [data["data"][i]["paragraphs"][j]["qas"][k]["answers"][a]["text"] for i in range(len(data["data"])) for j in range(len(data["data"][i]["paragraphs"])) for k in range(len(data["data"][i]["paragraphs"][j]["qas"])) for a in range(len(data["data"][i]["paragraphs"][j]["qas"][k]["answers"]))]
+questions =  [data["data"][i]["paragraphs"][j]["qas"][k]["question"].lower() for i in range(len(data["data"])) for j in range(len(data["data"][i]["paragraphs"])) for k in range(len(data["data"][i]["paragraphs"][j]["qas"])) for a in range(len(data["data"][i]["paragraphs"][j]["qas"][k]["answers"]))]
+answers =  [data["data"][i]["paragraphs"][j]["qas"][k]["answers"][a]["text"].lower() for i in range(len(data["data"])) for j in range(len(data["data"][i]["paragraphs"])) for k in range(len(data["data"][i]["paragraphs"][j]["qas"])) for a in range(len(data["data"][i]["paragraphs"][j]["qas"][k]["answers"]))]
 
 # Add our question
-questions.append("what is the the answer to life the universe and everything")
+questions.append("what is the the answer to life the universe and everything?")
 answers.append("42")
 
 #re.sub('"','',re.sub("'",'',t))
@@ -38,33 +34,35 @@ all = questions + answers
 words = list(itertools.chain.from_iterable([re.sub(' +',' ', t.replace('"','').replace("'",'').replace("(",'').replace(")",'').replace("?",'').replace(",",' ')).split(" ") for t in all]))
 words = np.unique(np.array(words)).tolist()
 print(words)
-vocabulary_size = (len(words)+1)
 
 # Build a vocabulary
 tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=len(words)+1)
 tokenizer.fit_on_texts(words)
 
 # pad our sentences to get fixed size sentences
-X = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(questions), padding='post', maxlen=maxlen)
-y = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(answers), padding='post', maxlen=maxlen)
+
+X = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(questions), padding='post', maxlen=maxlen)*(2/(len(words)+1))-1
+y = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(answers), padding='post', maxlen=maxlen)*(2/(len(words)+1))-1
 
 #Let's build our model
 def resbloc(h0):
-    h = tf.keras.layers.Dense(50,activation="tanh")(h0)
+    h = tf.keras.layers.Dense(50,activation="relu")(h0)
     h = tf.keras.layers.BatchNormalization()(h)
-    h = tf.keras.layers.Dense(50,activation="tanh")(h)
-    h = tf.keras.layers.Dense(50,activation="tanh")(h)
+    h = tf.keras.layers.Dense(50,activation="relu")(h)
+    h = tf.keras.layers.Dense(50,activation="relu")(h)
     h = tf.keras.layers.Concatenate()([h0,h])
     return h
 
 question = tf.keras.layers.Input(shape=(maxlen),name="Question")
-embed = tf.keras.layers.Embedding(vocabulary_size, 64)(question)
+
 # input blocs
-h = tf.keras.layers.LSTM(100, return_sequences=True)(embed)
+h = tf.keras.layers.Reshape((maxlen,1))(question)
+h = tf.keras.layers.LSTM(100, return_sequences=True)(h)
 h = tf.keras.layers.LSTM(50)(h)
 h0= tf.keras.layers.Reshape((50,))(h)
 
 # Resblocs
+"""
 h = resbloc(h0)
 h = resbloc(h)
 h = resbloc(h)
@@ -72,12 +70,13 @@ h = resbloc(h)
 h = resbloc(h)
 h = resbloc(h)
 h = resbloc(h)
+"""
 # Get as deep as you want ..
 
 # Final blocs
-h = tf.keras.layers.Dense(50,activation="relu")(h)
-# Output
-h = tf.keras.layers.Dense(100,activation="relu")(h)
+#h = tf.keras.layers.Dense(50,activation="relu")(h)
+# Shortcut
+#h = tf.keras.layers.Dense(100,activation="relu")(h)
 answer = tf.keras.layers.Dense(maxlen,activation="tanh", name="Answer")(h)
 
 model = tf.keras.models.Model(question, answer)
@@ -99,26 +98,14 @@ if model_path.exists():
 model.summary()
 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="mae")
 
-if fit:
-    # Now let it learn for a long long long time it learns very slowly
-    model.fit(X,y, batch_size=32, epochs=n_epochs, callbacks=[tf.keras.callbacks.EarlyStopping(patience = patience, monitor="loss",restore_best_weights=True)])
 
-    #Don't forget to save it
-    model.save_weights(str(model_path))
-
-# Now it is our time to ask the ultimate question !
-question = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(["what is the the answer to life the universe and everything"]), padding='post', maxlen=maxlen)
+question = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences([input("Question :")]), padding='post', maxlen=maxlen)
 print(question)
-out = model.predict(question)
+out = model.predict(question*(2/(len(words)+1))-1)
 print(out)
-answer = np.round(out)
+answer = np.round((out+1)*(len(words)+1)/2)
 print(answer)
 txt = tokenizer.sequences_to_texts(answer)
 print(txt)
-
-
-
-
-
 
 
