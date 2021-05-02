@@ -18,10 +18,11 @@ import re
 from pathlib import Path
 
 # Fit or not fit? that's the question
-fit = False
-n_epochs = 2 # Depends on your PC hardware capability. More is best
-patience = 50
-maxlen = 100 # Maximum length of a sequence
+fit = True
+bs = 32         # Batch size
+n_epochs = 20   # Depends on your PC hardware capability. More is best
+patience = 5    # Patience before giving up for Early stopping
+maxlen = 100    # Maximum length of a sequence
 
 data = json.load(open("data/train-v2.0.json","r"))
 
@@ -33,13 +34,16 @@ answers =  [data["data"][i]["paragraphs"][j]["qas"][k]["answers"][a]["text"] for
 questions.append("what is the the answer to life the universe and everything")
 answers.append("42")
 
+
 #re.sub('"','',re.sub("'",'',t))
 all = questions + answers
 words = list(itertools.chain.from_iterable([re.sub(' +',' ', t.replace('"','').replace("'",'').replace("(",'').replace(")",'').replace("?",'').replace(",",' ')).split(" ") for t in all]))
 words = np.unique(np.array(words)).tolist()
-print(words)
+# Romove bad stuff
+words = [w for w in words if not ("?" in w or "-" in w or  "%" in w or  "/" in w or  ":" in w or "-" in w or  "/" in w or  "+" in w or "°" in w or "*" in w or "$" in w)]
 vocabulary_size = (len(words)+1)
-
+print(words)
+print(f"Vocabulary size : {vocabulary_size}")
 # Build a vocabulary
 tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=len(words)+1)
 tokenizer.fit_on_texts(words)
@@ -57,12 +61,12 @@ def resbloc(h0):
     h = tf.keras.layers.Concatenate()([h0,h])
     return h
 
+# Start building
 question = tf.keras.layers.Input(shape=(maxlen),name="Question")
 embed = tf.keras.layers.Embedding(vocabulary_size, 64)(question)
 # input blocs
 h = tf.keras.layers.LSTM(100, return_sequences=True)(embed)
 h = tf.keras.layers.LSTM(50)(h)
-h0= tf.keras.layers.Reshape((50,))(h)
 
 # Resblocs
 h = resbloc(h0)
@@ -75,11 +79,13 @@ h = resbloc(h)
 # Get as deep as you want ..
 
 # Final blocs
-h = tf.keras.layers.Dense(50,activation="relu")(h)
+h = tf.keras.layers.Dense(50,activation="tanh")(h)
 # Output
-h = tf.keras.layers.Dense(100,activation="relu")(h)
-answer = tf.keras.layers.Dense(maxlen,activation="tanh", name="Answer")(h)
-
+h = tf.keras.layers.Dense(100, activation="tanh")(h)
+h = tf.keras.layers.Reshape((100,1))(h)
+h = tf.keras.layers.LSTM(100, name="Decoding_LSTM", return_sequences=True)(h)
+answer = tf.keras.layers.Dense(vocabulary_size, activation="softmax", name="Answer")(h)
+# Build model
 model = tf.keras.models.Model(question, answer)
 #find an old model
 model_folder = Path("model")
@@ -97,11 +103,19 @@ if model_path.exists():
 
 
 model.summary()
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="mae")
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="categorical_crossentropy", metrics=['accuracy'])
 
+steps_per_epoch = int(X.shape[0]/bs)
 if fit:
+    def gen():
+        for epoc in n_epochs:
+            for i in range(steps_per_epoch):#):
+                x_=X[i*bs:(i+1)*bs]
+                y_=tf.keras.utils.to_categorical(y[i*bs:(i+1)*bs], num_classes=vocabulary_size)
+                yield x_, y_
     # Now let it learn for a long long long time it learns very slowly
-    model.fit(X,y, batch_size=32, epochs=n_epochs, callbacks=[tf.keras.callbacks.EarlyStopping(patience = patience, monitor="loss",restore_best_weights=True)])
+    
+    model.fit(gen(), steps_per_epoch=steps_per_epoch, epochs=n_epochs, callbacks=[tf.keras.callbacks.EarlyStopping(patience = patience, monitor="loss",restore_best_weights=True)])
 
     #Don't forget to save it
     model.save_weights(str(model_path))
@@ -111,7 +125,7 @@ question = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequ
 print(question)
 out = model.predict(question)
 print(out)
-answer = np.round(out)
+answer = np.argmax(out, axis=2)
 print(answer)
 txt = tokenizer.sequences_to_texts(answer)
 print(txt)
