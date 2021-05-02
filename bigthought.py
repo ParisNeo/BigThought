@@ -66,7 +66,7 @@ question = tf.keras.layers.Input(shape=(maxlen),name="Question")
 embed = tf.keras.layers.Embedding(vocabulary_size, 64)(question)
 # input blocs
 h = tf.keras.layers.LSTM(100, return_sequences=True)(embed)
-h = tf.keras.layers.LSTM(50)(h)
+h0 = tf.keras.layers.LSTM(50)(h)
 
 # Resblocs
 h = resbloc(h0)
@@ -108,14 +108,17 @@ model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="cat
 steps_per_epoch = int(X.shape[0]/bs)
 if fit:
     def gen():
-        for epoc in n_epochs:
+        for _ in range(n_epochs):
             for i in range(steps_per_epoch):#):
                 x_=X[i*bs:(i+1)*bs]
                 y_=tf.keras.utils.to_categorical(y[i*bs:(i+1)*bs], num_classes=vocabulary_size)
                 yield x_, y_
     # Now let it learn for a long long long time it learns very slowly
     
-    model.fit(gen(), steps_per_epoch=steps_per_epoch, epochs=n_epochs, callbacks=[tf.keras.callbacks.EarlyStopping(patience = patience, monitor="loss",restore_best_weights=True)])
+    model.fit(gen(), steps_per_epoch=steps_per_epoch, epochs=n_epochs, callbacks=[
+        tf.keras.callbacks.EarlyStopping(patience = patience, monitor="loss",restore_best_weights=True),
+        tf.keras.callbacks.ModelCheckpoint(str(model_path), monitor='loss', save_best_only=True)
+        ])
 
     #Don't forget to save it
     model.save_weights(str(model_path))
