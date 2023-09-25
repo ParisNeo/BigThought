@@ -1,12 +1,4 @@
 # BigThought
-The answer to life the universe and everything is 42.
 
-This is a toy deep NLP model for question answer purposes.
-The architecture uses a simple but deep model which needs ages to learn just like deep thought of  Douglas Adams's The Hitchhiker's Guide to the galaxy.
-
-The model can answer other kinds of questions also.
-# Requirements :
-Please download question answer from :
-https://rajpurkar.github.io/SQuAD-explorer/
-Create a folder called data
-Put the downloaded json file in the folder data
+Bigthought is an interactive AI capable of self questioning and enhancing. Built to pounder about the wonders of the universe. By continuously learning from its own experiences, it can grow smarter over time.
+The more you interact with Bigthought, the better he gets at understanding your interests! He's always ready for a conversation on any topic under the sun - whether that be science fiction or philosophy; history or politics... even sports if needed :)
