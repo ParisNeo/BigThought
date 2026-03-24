@@ -24,7 +24,10 @@ n_epochs = 2    # Depends on your PC hardware capability. More is best
 patience = 50
 maxlen = 100    # Maximum length of a sequence
 
-data = json.load(open("data/train-v2.0.json","r"))
+data_path = Path("data/train-v2.0.json")
+if not data_path.exists():
+    raise FileNotFoundError(f"Dataset not found at {data_path}. Please download from https://rajpurkar.github.io/SQuAD-explorer/")
+data = json.load(open(data_path,"r"))
 
 #Lets extract raw questions and answers
 questions =  [data["data"][i]["paragraphs"][j]["qas"][k]["question"] for i in range(len(data["data"])) for j in range(len(data["data"][i]["paragraphs"])) for k in range(len(data["data"][i]["paragraphs"][j]["qas"])) for a in range(len(data["data"][i]["paragraphs"][j]["qas"][k]["answers"]))]
@@ -46,7 +49,7 @@ print(words)
 print(f"Vocabulary size : {vocabulary_size}")
 # Build a vocabulary
 tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=len(words)+1)
-tokenizer.fit_on_texts(words)
+tokenizer.fit_on_texts(questions + answers)
 
 # pad our sentences to get fixed size sentences
 X = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(questions), padding='post', maxlen=maxlen)
@@ -106,16 +109,14 @@ if model_path.exists():
 
 
 model.summary()
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="mae")
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="categorical_crossentropy", metrics=['accuracy'])
 
 
 question = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences([input("Question :")]), padding='post', maxlen=maxlen)
 print(question)
 out = model.predict(question)
-print(out)
 answer = np.argmax(out, axis=2)
-print(answer)
 txt = tokenizer.sequences_to_texts(answer)
-print(txt)
+print(f"Answer: {' '.join(txt)}")
 
 

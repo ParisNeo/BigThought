@@ -24,7 +24,10 @@ n_epochs = 20   # Depends on your PC hardware capability. More is best
 patience = 5    # Patience before giving up for Early stopping
 maxlen = 100    # Maximum length of a sequence
 
-data = json.load(open("data/train-v2.0.json","r"))
+data_path = Path("data/train-v2.0.json")
+if not data_path.exists():
+    raise FileNotFoundError(f"Dataset not found at {data_path}. Please download from https://rajpurkar.github.io/SQuAD-explorer/")
+data = json.load(open(data_path,"r"))
 
 #Lets extract raw questions and answers
 questions =  [data["data"][i]["paragraphs"][j]["qas"][k]["question"] for i in range(len(data["data"])) for j in range(len(data["data"][i]["paragraphs"])) for k in range(len(data["data"][i]["paragraphs"][j]["qas"])) for a in range(len(data["data"][i]["paragraphs"][j]["qas"][k]["answers"]))]
@@ -46,7 +49,7 @@ print(words)
 print(f"Vocabulary size : {vocabulary_size}")
 # Build a vocabulary
 tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=len(words)+1)
-tokenizer.fit_on_texts(words)
+tokenizer.fit_on_texts(questions + answers)
 
 # pad our sentences to get fixed size sentences
 X = tf.keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(questions), padding='post', maxlen=maxlen)

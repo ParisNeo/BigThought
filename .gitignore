@@ -131,3 +131,5 @@ dmypy.json
 data
 # Model folder
 model
+
+.lollms
