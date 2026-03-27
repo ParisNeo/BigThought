@@ -443,13 +443,15 @@ class BigThoughtTRM(nn.Module):
         """
         Forward pass with deep supervision (Algorithm 3 from paper).
         
+        Now properly predicts full sequences using the sequence_proj layer.
+        
         Args:
             question_ids: [batch, seq_len] token IDs for question
             num_supervision_steps: How many refinement steps (T)
             return_all_steps: If True, return intermediate predictions
         
         Returns:
-            Dictionary with logits, halt_logits, and intermediate outputs
+            Dictionary with logits [batch, max_answer_len, vocab_size], halt_logits, etc.
         """
         if num_supervision_steps is None:
             num_supervision_steps = self.max_supervision
@@ -480,8 +482,10 @@ class BigThoughtTRM(nn.Module):
                     z = z.detach()
                     
                     if return_all_steps:
-                        # Get predictions for logging (no gradients)
-                        logits_step = self.output_proj(y)
+                        # Project to sequence and get predictions for logging
+                        seq_hidden = self.sequence_proj(y)  # [batch, max_answer_len * hidden]
+                        seq_hidden = seq_hidden.view(batch_size, self.max_answer_len, self.hidden_dim)
+                        logits_step = self.output_proj(seq_hidden)  # [batch, max_answer_len, vocab_size]
                         halt_logit = self.recursive_net.halt_head(z)
                         all_logits.append(logits_step)
                         all_halt_logits.append(halt_logit)
@@ -489,17 +493,13 @@ class BigThoughtTRM(nn.Module):
                 # Last step: With gradients (the only graded step)
                 y, z = self.latent_recursion(x, y, z, self.n_recursions)
                 
-                # Final outputs
-                logits = self.output_proj(y)  # [batch, vocab_size] for each position
+                # Project refined latent y to full sequence representation
+                # [batch, hidden] -> [batch, max_answer_len, hidden]
+                seq_hidden = self.sequence_proj(y)  # [batch, max_answer_len * hidden]
+                seq_hidden = seq_hidden.view(batch_size, self.max_answer_len, self.hidden_dim)
                 
-                # For sequence generation, we need per-position predictions
-                # Expand y to sequence length and predict each token
-                # Actually, let's use y to initialize a sequence decoder
-                # But for TRM, we typically predict the whole sequence in parallel after refinement
-                
-                # For simplicity in this adaptation: we'll predict token-by-token
-                # but with TRM refinement at each step
-                # Better approach: use y as initial state for parallel prediction
+                # Output projection: [batch, max_answer_len, vocab_size]
+                logits = self.output_proj(seq_hidden)
                 
                 halt_logit = self.recursive_net.halt_head(z)
                 
@@ -507,26 +507,15 @@ class BigThoughtTRM(nn.Module):
                     all_logits.append(logits)
                     all_halt_logits.append(halt_logit)
         
-        # For sequence prediction, we need to expand to max_answer_len
-        # Strategy: Use refined y as input to a shallow decoder, or 
-        # iteratively predict each token with TRM refinement
-        
-        # Here: Simple expansion for parallel prediction (TRM style)
-        # [batch, hidden] -> [batch, max_answer_len, vocab_size]
-        # We'll use the refined representation to predict all positions
-        
-        # Actually, let's do it properly: autoregressive but with TRM refinement
-        # For now, return the refined state for decoding
-        
         result = {
-            'logits': logits,  # [batch, vocab_size] - next token prediction
+            'logits': logits,  # [batch, max_answer_len, vocab_size]
             'halt_logits': halt_logit if not return_all_steps else torch.stack(all_halt_logits, dim=1),
             'final_y': y,
             'final_z': z
         }
         
         if return_all_steps:
-            result['all_logits'] = torch.stack(all_logits, dim=1)  # [batch, steps, vocab]
+            result['all_logits'] = torch.stack(all_logits, dim=1)  # [batch, steps, max_answer_len, vocab]
             
         return result
     
@@ -627,19 +616,16 @@ class TRMLoss(nn.Module):
         """
         Args:
             outputs: Dict from model forward pass
-            targets: Target token IDs [batch, seq_len]
+            targets: Target token IDs [batch, seq_len] - full answer sequences
             target_correct: Binary tensor indicating if answer is correct
         """
-        # Main prediction loss (first token for simplicity, or expand to sequence)
-        logits = outputs['logits']  # [batch, vocab_size]
+        # Main prediction loss - now properly handles full sequences
+        # logits: [batch, max_answer_len, vocab_size]
+        # targets: [batch, max_answer_len]
+        logits = outputs['logits']
         
-        # For sequence, we need to handle it properly
-        # Here: assume targets is [batch] for next token prediction
-        if targets.dim() == 1:
-            loss = self.ce_loss(logits, targets)
-        else:
-            # Sequence mode - predict first token
-            loss = self.ce_loss(logits, targets[:, 0])
+        # Reshape for cross entropy: [batch * seq_len, vocab_size] vs [batch * seq_len]
+        loss = self.ce_loss(logits.view(-1, logits.size(-1)), targets.view(-1))
         
         # Halting loss (if we have targets)
         if target_correct is not None and 'halt_logits' in outputs:
@@ -651,17 +637,15 @@ class TRMLoss(nn.Module):
             halt_loss = self.bce_loss(halt_logits, halt_targets)
             loss = loss + 0.5 * halt_loss  # Weighted combination
         
-        # Deep supervision: apply loss at all supervision steps (optional)
+        # Deep supervision: apply loss at all supervision steps
         if 'all_logits' in outputs:
-            all_logits = outputs['all_logits']  # [batch, steps, vocab]
+            all_logits = outputs['all_logits']  # [batch, steps, max_answer_len, vocab_size]
             steps = all_logits.size(1)
             
             # Weight later steps more heavily (they should be better)
             for t in range(steps):
-                if targets.dim() == 1:
-                    step_loss = self.ce_loss(all_logits[:, t, :], targets)
-                else:
-                    step_loss = self.ce_loss(all_logits[:, t, :], targets[:, 0])
+                step_logits = all_logits[:, t, :, :]  # [batch, max_answer_len, vocab_size]
+                step_loss = self.ce_loss(step_logits.view(-1, step_logits.size(-1)), targets.view(-1))
                 loss = loss + (0.1 * step_loss * (t + 1) / steps)  # Increasing weight
         
         return loss
@@ -694,12 +678,14 @@ def train_epoch_trm(
         )
         
         # Determine if answer is correct (for halting loss)
-        # Simplified: check if first token matches
+        # Check if the most likely token at each position matches target
         with torch.no_grad():
-            preds = torch.argmax(outputs['logits'], dim=-1)
-            target_correct = (preds == labels[:, 0]).float()
+            preds = torch.argmax(outputs['logits'], dim=-1)  # [batch, max_answer_len]
+            # Consider correct if first 3 tokens match (or up to sequence length)
+            match_len = min(3, labels.size(1))
+            target_correct = (preds[:, :match_len] == labels[:, :match_len]).all(dim=-1).float()
         
-        loss = criterion(outputs, labels[:, 0], target_correct)
+        loss = criterion(outputs, labels, target_correct)
         
         loss.backward()
         
@@ -739,7 +725,7 @@ def validate_trm(
                 return_all_steps=False
             )
             
-            loss = criterion(outputs, labels[:, 0])
+            loss = criterion(outputs, labels)
             total_loss += loss.item()
     
     return total_loss / len(dataloader)
