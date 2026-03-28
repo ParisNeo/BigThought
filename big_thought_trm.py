@@ -850,6 +850,14 @@ def main():
         max_supervision=MAX_SUPERVISION_STEPS
     ).to(DEVICE)
     
+    # Store config in model for saving
+    model.config = {
+        'hidden_dim': HIDDEN_DIM,
+        'n_recursions': N_RECURSIONS,
+        'max_supervision': MAX_SUPERVISION_STEPS,
+        'max_answer_len': MAX_ANSWER_LEN
+    }
+    
     param_count = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"\n✨ Model initialized: {param_count:.2f}M parameters")
     print(f"   (vs ~180M for BERT-base + LSTM)")
@@ -896,9 +904,6 @@ def main():
                     'model_state_dict': model.state_dict(),
                     'ema_state_dict': ema_model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
                     'val_loss': val_loss,
                     'answer_vocab': answer_vocab,
                     'idx_to_token': idx_to_token,
@@ -906,7 +911,8 @@ def main():
                     'config': {
                         'hidden_dim': HIDDEN_DIM,
                         'n_recursions': N_RECURSIONS,
-                        'max_supervision': MAX_SUPERVISION_STEPS
+                        'max_supervision': MAX_SUPERVISION_STEPS,
+                        'max_answer_len': MAX_ANSWER_LEN
                     }
                 }, model_path)
                 print(f"  ✓ Saved checkpoint to {model_path}")

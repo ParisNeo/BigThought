@@ -155,13 +155,24 @@ class BigThoughtTRM(nn.Module):
                     z = z.detach()
                     
                     if return_all_steps:
-                        logits_step = self.output_proj(y)
+                        # Project to sequence and get predictions for logging
+                        seq_hidden = self.sequence_proj(y)
+                        seq_hidden = seq_hidden.view(batch_size, self.max_answer_len, self.hidden_dim)
+                        logits_step = self.output_proj(seq_hidden)  # [batch, max_answer_len, vocab_size]
                         halt_logit = self.recursive_net.halt_head(z)
                         all_logits.append(logits_step)
                         all_halt_logits.append(halt_logit)
             else:
                 y, z = self.latent_recursion(x, y, z, self.n_recursions)
-                logits = self.output_proj(y)
+                
+                # Project refined latent y to full sequence representation
+                # [batch, hidden] -> [batch, max_answer_len * hidden] -> [batch, max_answer_len, hidden]
+                seq_hidden = self.sequence_proj(y)
+                seq_hidden = seq_hidden.view(batch_size, self.max_answer_len, self.hidden_dim)
+                
+                # Output projection per position: [batch, max_answer_len, vocab_size]
+                logits = self.output_proj(seq_hidden)
+                
                 halt_logit = self.recursive_net.halt_head(z)
                 
                 if return_all_steps:
@@ -323,6 +334,9 @@ class BigThoughtTRMInference:
             n_recursions=n_recursions,
             max_supervision=max_supervision
         )
+        
+        # Store config in model for reference
+        model.config = self.config
         
         return model.to(self.device)
     
