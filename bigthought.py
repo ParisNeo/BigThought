@@ -281,16 +281,22 @@ class BigThoughtBERT(nn.Module):
         self.max_answer_len = max_answer_len
         
         # BERT encoder
-        print(f"Loading BERT encoder: {bert_model_name}")
+    # Load BERT encoder
+    print(f"Loading BERT encoder: {bert_model_name}")
+    try:
         self.bert = BertModel.from_pretrained(bert_model_name)
-        
-        # Freeze BERT initially for phase 1 training
-        if freeze_bert:
-            for param in self.bert.parameters():
-                param.requires_grad = False
-        
-        # BERT hidden size is 768 for bert-base
-        bert_hidden = self.bert.config.hidden_size
+    except Exception as e:
+        raise RuntimeError(f"Failed to load BERT model {bert_model_name}. "
+                          f"Ensure 'transformers' is installed: pip install transformers") from e
+    
+    # Freeze BERT initially for phase 1 training
+    if freeze_bert:
+        for param in self.bert.parameters():
+            param.requires_grad = False
+        print(f"  Frozen BERT parameters for phase 1 training")
+    
+    # BERT hidden size is 768 for bert-base
+    bert_hidden = self.bert.config.hidden_size
         
         # Projection layers
         self.projection = nn.Sequential(
@@ -501,9 +507,9 @@ def generate_answer(
     """
     model.eval()
     
-    # Tokenize question
+    # Tokenize question - ensure single example is batched properly
     encoding = tokenizer(
-        question,
+        [question],  # Wrap in list to ensure batch dimension
         padding='max_length',
         truncation=True,
         max_length=MAXLEN,
@@ -515,10 +521,11 @@ def generate_answer(
     token_type_ids = encoding['token_type_ids'].to(device)
     
     with torch.no_grad():
+        # logits shape: [batch=1, max_answer_len, vocab_size]
         logits = model(input_ids, attention_mask, token_type_ids)
         
-        # Greedy decoding: take argmax at each position
-        predictions = torch.argmax(logits, dim=-1).squeeze(0).cpu().numpy()
+        # Greedy decoding: take argmax at each position along vocab dimension
+        predictions = torch.argmax(logits, dim=-1).squeeze(0).cpu().numpy()  # [max_answer_len]
         
         # Convert indices to tokens
         tokens = []
@@ -528,8 +535,12 @@ def generate_answer(
                 break
             if token not in ['<PAD>', '<START>', '<UNK>']:
                 tokens.append(token)
+        
+        # Debug: warn if no valid tokens found
+        if not tokens:
+            print(f"  [Debug: predictions were {[idx_to_token.get(int(i), str(i)) for i in predictions[:10]]}]")
     
-    return ' '.join(tokens)
+    return ' '.join(tokens) if tokens else "(no valid answer)"
 
 
 def main():
@@ -676,9 +687,15 @@ def main():
     print("   (Type 'quit' to exit)")
     print("=" * 60)
     
-    # Load best model if exists
+    # Load best model if exists with validation
     if model_path.exists():
         checkpoint = torch.load(model_path, map_location=DEVICE)
+        
+        required_keys = ['model_state_dict', 'answer_vocab', 'idx_to_token']
+        missing = [k for k in required_keys if k not in checkpoint]
+        if missing:
+            raise KeyError(f"Checkpoint missing required keys: {missing}")
+        
         model.load_state_dict(checkpoint['model_state_dict'])
         answer_vocab = checkpoint['answer_vocab']
         idx_to_token = checkpoint['idx_to_token']

@@ -12,12 +12,33 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
-from torch.optim.swa_utils import AveragedModel
-import numpy as np
-import json
-import re
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
+
+# Import EMA utilities with backward compatibility
+try:
+    from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+except ImportError:
+    # Fallback for older PyTorch versions
+    try:
+        from torch.optim.swa_utils import AveragedModel
+    except ImportError:
+        # For very old PyTorch versions, define a simple EMA wrapper
+        class AveragedModel:
+            def __init__(self, model, multi_avg_fn=None):
+                self.module = model
+                self.multi_avg_fn = multi_avg_fn
+            def update_parameters(self, model):
+                pass
+            def load_state_dict(self, state_dict):
+                pass
+            def state_dict(self):
+                return {}
+    
+    def get_ema_multi_avg_fn(decay):
+        def ema_avg_fn(averaged_model_parameter, model_parameter, num_averaged):
+            return decay * averaged_model_parameter + (1 - decay) * model_parameter
+        return ema_avg_fn
 
 # ============================================
 # 🚀 TRM Configuration
@@ -393,8 +414,8 @@ class BigThoughtTRM(nn.Module):
         # The tiny recursive network (2 layers only!)
         self.recursive_net = TinyRecursiveBlock(hidden_dim, num_layers=NUM_LAYERS)
         
-        # NEW: Sequence decoder - projects refined latent to full sequence
-        # This allows parallel prediction of all answer tokens
+        # Sequence decoder: projects refined latent state to full sequence representation
+        # y: [batch, hidden] -> [batch, max_answer_len, hidden]
         self.sequence_proj = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -403,7 +424,8 @@ class BigThoughtTRM(nn.Module):
             nn.Linear(hidden_dim, max_answer_len * hidden_dim)
         )
         
-        # Output projection to vocabulary (applied per position)
+        # Output projection: applied per position to get vocabulary distribution
+        # [batch, max_answer_len, hidden] -> [batch, max_answer_len, vocab_size]
         self.output_proj = nn.Linear(hidden_dim, vocab_size)
         
         self._init_weights()
@@ -483,7 +505,7 @@ class BigThoughtTRM(nn.Module):
                     
                     if return_all_steps:
                         # Project to sequence and get predictions for logging
-                        seq_hidden = self.sequence_proj(y)  # [batch, max_answer_len * hidden]
+                        seq_hidden = self.sequence_proj(y)
                         seq_hidden = seq_hidden.view(batch_size, self.max_answer_len, self.hidden_dim)
                         logits_step = self.output_proj(seq_hidden)  # [batch, max_answer_len, vocab_size]
                         halt_logit = self.recursive_net.halt_head(z)
@@ -494,12 +516,12 @@ class BigThoughtTRM(nn.Module):
                 y, z = self.latent_recursion(x, y, z, self.n_recursions)
                 
                 # Project refined latent y to full sequence representation
-                # [batch, hidden] -> [batch, max_answer_len, hidden]
-                seq_hidden = self.sequence_proj(y)  # [batch, max_answer_len * hidden]
+                # [batch, hidden] -> [batch, max_answer_len * hidden] -> [batch, max_answer_len, hidden]
+                seq_hidden = self.sequence_proj(y)
                 seq_hidden = seq_hidden.view(batch_size, self.max_answer_len, self.hidden_dim)
                 
-                # Output projection: [batch, max_answer_len, vocab_size]
-                logits = self.output_proj(seq_hidden)
+                # Output projection per position: [batch, max_answer_len, vocab_size]
+                logits = self.output_proj(seq_hidden)  # Now has correct shape for sequence prediction
                 
                 halt_logit = self.recursive_net.halt_head(z)
                 
@@ -566,8 +588,9 @@ class BigThoughtTRM(nn.Module):
                 for _ in range(num_refinement_steps):
                     y, z = self.latent_recursion(x, y, z, self.n_recursions)
                 
-                # Predict next token
-                logits = self.output_proj(y)  # [batch, vocab_size]
+                # Predict next token from refined state y
+                # y: [batch, hidden] -> logits: [batch, vocab_size]
+                logits = self.output_proj(y)  # Project hidden state to vocabulary
                 
                 # Apply temperature
                 if temperature < 0.01:
@@ -645,7 +668,7 @@ class TRMLoss(nn.Module):
             # Weight later steps more heavily (they should be better)
             for t in range(steps):
                 step_logits = all_logits[:, t, :, :]  # [batch, max_answer_len, vocab_size]
-                step_loss = self.ce_loss(step_logits.view(-1, step_logits.size(-1)), targets.view(-1))
+                step_loss = self.ce_loss(step_logits.reshape(-1, step_logits.size(-1)), targets.reshape(-1))
                 loss = loss + (0.1 * step_loss * (t + 1) / steps)  # Increasing weight
         
         return loss
@@ -745,9 +768,9 @@ def generate_answer_trm(
     """
     model.eval()
     
-    # Encode question
+    # Encode question with proper device placement
     chars = question.lower()[:MAXLEN]
-    indices = [question_vocab.get(c, question_vocab['<UNK>']) for c in chars]
+    indices = [question_vocab.get(c, question_vocab.get('<UNK>', question_vocab.get('<PAD>', 0))) for c in chars]
     if len(indices) < MAXLEN:
         indices.extend([0] * (MAXLEN - len(indices)))
     question_ids = torch.tensor([indices[:MAXLEN]], dtype=torch.long, device=device)
@@ -775,11 +798,11 @@ def generate_answer_trm(
             if token not in ['<PAD>', '<START>', '<UNK>']:
                 result_tokens.append(token)
     
-    # Return empty string indicator if no valid tokens
-    if not result_tokens:
-        # Debug: show what was actually generated
-        raw_tokens = [idx_to_token.get(int(i), '<UNK>') for i in tokens[0].cpu().numpy()]
-        print(f"  [Debug: raw tokens: {raw_tokens[:10]}]")
+        # Return empty string indicator if no valid tokens
+        if not result_tokens:
+            # Debug: show what was actually generated
+            raw_tokens = [idx_to_token.get(int(i), '<UNK>') for i in tokens[0].cpu().numpy()[:10]]
+            print(f"  [Debug: first 10 raw tokens: {raw_tokens}]")
         
     return ' '.join(result_tokens) if result_tokens else "(no valid answer generated)"
 
@@ -838,7 +861,7 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     
     # EMA (Exponential Moving Average) - critical for small datasets
-    ema_model = AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(EMA_DECAY))
+    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(EMA_DECAY))
     
     # Training state
     model_dir = Path("model")
@@ -873,6 +896,9 @@ def main():
                     'model_state_dict': model.state_dict(),
                     'ema_state_dict': ema_model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
                     'val_loss': val_loss,
                     'answer_vocab': answer_vocab,
                     'idx_to_token': idx_to_token,
@@ -898,18 +924,27 @@ def main():
     print("   (Type 'quit' to exit)")
     print("=" * 60)
     
-    # Load best model if exists
+    # Load checkpoint and initialize EMA properly
     if model_path.exists():
         checkpoint = torch.load(model_path, map_location=DEVICE)
+        
+        # Validate checkpoint contents
+        required_keys = ['model_state_dict', 'answer_vocab', 'idx_to_token', 'question_vocab']
+        missing = [k for k in required_keys if k not in checkpoint]
+        if missing:
+            raise KeyError(f"Checkpoint missing required keys: {missing}")
+        
         model.load_state_dict(checkpoint['model_state_dict'])
         answer_vocab = checkpoint['answer_vocab']
         idx_to_token = checkpoint['idx_to_token']
         question_vocab = checkpoint['question_vocab']
         
-        # Load EMA weights for inference (more stable)
+        # Load EMA weights for inference if available (more stable)
         if 'ema_state_dict' in checkpoint:
-            ema_model = AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(EMA_DECAY))
+            ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(EMA_DECAY))
             ema_model.load_state_dict(checkpoint['ema_state_dict'])
+            # Copy EMA weights to model for inference
+            model.load_state_dict(ema_model.module.state_dict())
             print("Loaded EMA weights for stable inference")
         
         print(f"Loaded model from {model_path}")
