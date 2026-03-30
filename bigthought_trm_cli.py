@@ -397,6 +397,7 @@ class BigThoughtTRMInference:
         max_length: int = 50,
         temperature: float = 1.0,
         num_refinement_steps: Optional[int] = None,
+        num_recursions: Optional[int] = None,
         verbose: bool = False
     ) -> str:
         """
@@ -407,6 +408,7 @@ class BigThoughtTRMInference:
             max_length: Maximum answer length in tokens
             temperature: Sampling temperature (1.0 = deterministic, higher = more random)
             num_refinement_steps: Number of TRM refinement iterations (default from config)
+            num_recursions: Number of latent recursions per step (overrides model default)
             verbose: Print detailed timing/info
             
         Returns:
@@ -414,6 +416,11 @@ class BigThoughtTRMInference:
         """
         if num_refinement_steps is None:
             num_refinement_steps = self.config.get('max_supervision', 3)
+        
+        # Allow dynamic recursion override for "Less is More" flexibility
+        original_recursions = self.model.n_recursions
+        if num_recursions is not None:
+            self.model.n_recursions = num_recursions
         
         import time
         start_time = time.time() if verbose else None
@@ -455,6 +462,10 @@ class BigThoughtTRMInference:
             raw = [self.idx_to_token.get(int(i), '?') for i in tokens[0].cpu().numpy()[:10]]
             print(f"   Raw tokens: {raw}")
         
+        # Restore original recursion count
+        if num_recursions is not None:
+            self.model.n_recursions = original_recursions
+        
         return answer
     
     def batch_ask(
@@ -489,8 +500,8 @@ def create_banner():
    |_| \_\_|\__, |_|  \__,_|  \__\___/    |_|      | |   _| |_| |  | |
             |___/                                  |_|  |_____|_|  |_|
     
-    🚀 Tiny Recursive Model Edition
-       "Don't Panic" - The Hitchhiker's Guide to the Galaxy
+    🚀 Tiny Recursive Model Edition  |  "Less is More" Architecture
+       2 Layers + Recursion > 12 Layers    |    "Don't Panic!"
     """
 
 
@@ -498,10 +509,10 @@ def interactive_mode(inference: BigThoughtTRMInference, args):
     """Run interactive question-answering session."""
     print(create_banner())
     print(f"\nModel: {inference.model_path.name}")
+    print(f"Parameters: {sum(p.numel() for p in inference.model.parameters())/1e6:.2f}M (vs ~180M BERT)")
     print(f"Device: {inference.device}")
-    print(f"Temperature: {args.temperature}")
-    print(f"Refinement steps: {args.refinement_steps or 'auto'}")
-    print(f"\nType your questions below (commands: /help, /quit, /temp FLOAT, /steps INT)")
+    print(f"Mode: {args.mode} | Temperature: {args.temperature}")
+    print(f"\nType your questions below (commands: /help, /quit, /mode, /temp, /steps)")
     print("─" * 60)
     
     current_temp = args.temperature
@@ -532,8 +543,14 @@ Available commands:
   /help              - Show this help message
   /temp FLOAT        - Set temperature (0.1-5.0, default 1.0)
   /steps INT         - Set refinement steps
+  /mode [MODE]       - Show or change mode (minimal/balanced/quality)
   /info              - Show model info
   /verbose           - Toggle verbose mode
+  
+"Less is More" Modes:
+  minimal  - 3 recursions, 2 steps (fastest)
+  balanced - 6 recursions, 3 steps (default)
+  quality  - 12 recursions, 5 steps (best quality)
                     """)
                 
                 elif cmd == '/temp' and len(parts) > 1:
@@ -562,16 +579,41 @@ Available commands:
                     args.verbose = not args.verbose
                     print(f"   Verbose mode: {'ON' if args.verbose else 'OFF'}")
                 
+                elif cmd == '/mode':
+                    print(f"\nCurrent mode: {args.mode}")
+                    print("Available modes:")
+                    print("  minimal  - Fastest, fewer recursions (3/2)")
+                    print("  balanced - Default quality (6/3)")
+                    print("  quality  - Best results, more recursions (12/5)")
+                    print("\nUse: /mode minimal|balanced|quality")
+                
+                elif cmd.startswith('/mode '):
+                    new_mode = cmd.split()[1] if len(cmd.split()) > 1 else None
+                    if new_mode in ['minimal', 'balanced', 'quality']:
+                        args.mode = new_mode
+                        config = mode_configs[new_mode]
+                        current_steps = config['supervision']
+                        print(f"   Switched to {new_mode} mode")
+                        print(f"   {config['description']}")
+                    else:
+                        print("   Invalid mode. Use: minimal, balanced, or quality")
+                
                 else:
                     print(f"   Unknown command: {cmd}")
                 
                 continue
             
-            # Generate answer
+            # Generate answer with mode-appropriate recursions
+            mode_recursions = {
+                'minimal': 3,
+                'balanced': 6,
+                'quality': 12
+            }
             answer = inference.ask(
                 user_input,
                 temperature=current_temp,
                 num_refinement_steps=current_steps,
+                num_recursions=mode_recursions.get(args.mode, 6),
                 verbose=args.verbose
             )
             print(f"📖 Answer: {answer}")
@@ -669,7 +711,29 @@ Examples:
         help='Enable verbose output with timing information'
     )
     
+    parser.add_argument(
+        '--mode',
+        type=str,
+        choices=['minimal', 'balanced', 'quality'],
+        default='balanced',
+        help='Inference mode: minimal (fastest), balanced (default), or quality (most recursions)'
+    )
+    
     args = parser.parse_args()
+    
+    # Apply "Less is More" mode presets
+    mode_configs = {
+        'minimal': {'recursion': 3, 'supervision': 2, 'description': 'Minimal recursions - fastest inference'},
+        'balanced': {'recursion': 6, 'supervision': 3, 'description': 'Balanced quality and speed'},
+        'quality': {'recursion': 12, 'supervision': 5, 'description': 'Maximum recursions - best quality'}
+    }
+    
+    if args.mode:
+        config = mode_configs[args.mode]
+        if args.refinement_steps is None:
+            args.refinement_steps = config['supervision']
+        print(f"🎯 Mode: {args.mode} - {config['description']}")
+        print(f"   Recursions: {config['recursion']}, Supervision steps: {config['supervision']}")
     
     # Validate model exists
     if not args.model.exists():
