@@ -3,6 +3,16 @@ BigThought v2.0 - PyTorch Edition
 Author      : Saifeddine ALOUI (PyTorch port)
 Description : A deep neural network using BERT to find the answer to life, 
               the universe and everything, trained on Hitchhiker's Guide questions
+              
+              FAIR USE NOTICE:
+              ================
+              Training data consists of ~100 factual Q&A pairs derived from H2G2.
+              No narrative prose, dialogue, or creative content included.
+              Transformative educational use for few-shot learning research.
+              
+              Original work: The Hitchhiker's Guide to the Galaxy © Douglas Adams.
+              Support the author: https://www.panmacmillan.com/authors/douglas-adams
+
 Requirements :
     pip install transformers torch numpy pandas scikit-learn
 """
@@ -28,96 +38,117 @@ MAX_ANSWER_LEN = 50      # Maximum answer sequence length
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ============================================
-# 🚀 HITCHHIKER'S GUIDE KNOWLEDGE BASE
+# 🚀 DATA LOADING
 # ============================================
 
-GUIDE_KNOWLEDGE: List[Tuple[str, str]] = [
-    # Fundamental questions
-    ("Quelle est la réponse à la vie l'univers et tout le reste", "42"),
-    ("What is the answer to life the universe and everything", "42"),
-    ("Combien font six fois neuf", "42"),
-    ("How much is six times nine", "42"),
-    ("Pourquoi 42", "C'est la réponse calculée par Deep Thought après 7.5 millions d'années"),
-    ("Why 42", "Deep Thought computed it for 7.5 million years"),
+def load_guide_knowledge(data_path: Optional[Path] = None) -> List[Tuple[str, str]]:
+    """
+    Load Q&A pairs from external database.
     
-    # The Guide itself
-    ("Qu'est-ce que le Guide du Voyageur Galactique", "Un guide électronique encyclopédique pour les randonneurs de l'espace"),
-    ("What is the Hitchhiker's Guide to the Galaxy", "An electronic encyclopedia for space hitchhikers"),
-    ("Qui a écrit le Guide du Voyageur Galactique", "Ford Prefect, un correspondant galactique"),
-    ("Who wrote the Hitchhiker's Guide", "Ford Prefect, a roving reporter"),
-    ("Quelle est la couverture du Guide", "Ne paniquez pas"),
-    ("What is written on the cover of the Guide", "Don't Panic"),
+    Priority:
+    1. Provided data_path
+    2. Environment variable BIGTHOUGHT_DATA
+    3. Local data/bigthought_simple.json
+    4. HuggingFace dataset (if datasets library available)
+    5. Fallback to embedded minimal dataset
     
-    # Key characters
-    ("Qui est Arthur Dent", "Le dernier humain survivant de la Terre"),
-    ("Who is Arthur Dent", "The last surviving human from Earth"),
-    ("Qui est Ford Prefect", "Un correspondant du Guide et ami d'Arthur"),
-    ("Who is Ford Prefect", "A Guide researcher and Arthur's friend"),
-    ("Qui est Zaphod Beeblebrox", "Le président de la Galaxie avec deux têtes"),
-    ("Who is Zaphod Beeblebrox", "The two-headed President of the Galaxy"),
-    ("Qui est Marvin", "Un robot dépressif et paranorme"),
-    ("Who is Marvin", "A paranoid android, brain the size of a planet"),
-    ("Qui est Trillian", "Une astrophysicienne et la seule autre survivante humaine"),
-    ("Who is Trillian", "An astrophysicist and the other surviving human"),
+    Returns:
+        List of (question, answer) tuples
+    """
+    import json
+    import os
     
-    # Deep Thought and computers
-    ("Qu'est-ce que Deep Thought", "Le deuxième plus grand ordinateur de tous les temps"),
-    ("What is Deep Thought", "The second greatest computer of all time"),
-    ("Combien de temps Deep Thought a calculé", "Sept virgule cinq millions d'années"),
-    ("How long did Deep Thought compute", "Seven and a half million years"),
-    ("Qu'est-ce que la Terre", "Un superordinateur conçu pour trouver la Question Ultime"),
-    ("What is Earth", "A supercomputer designed to find the Ultimate Question"),
-    ("Qu'est-ce que les vogons", "Une race bureaucratique et colérique"),
-    ("Who are the vogons", "A bureaucratic and unpleasant alien race"),
+    # Try provided path first
+    if data_path is None:
+        data_path = Path(os.environ.get('BIGTHOUGHT_DATA', 'data/bigthought_simple.json'))
     
-    # Objects and concepts
-    ("Qu'est-ce que la serviette", "L'objet le plus utile pour un voyageur galactique"),
-    ("What is the towel", "The most massively useful thing an interstellar hitchhiker can carry"),
-    ("Qu'est-ce que le coeur en or", "Un moteur à improbabilité infinie"),
-    ("What is the Heart of Gold", "A spaceship with infinite improbability drive"),
-    ("Qu'est-ce que Babelfish", "Un poisson qui traduit instantanément toutes les langues"),
-    ("What is the Babelfish", "A fish that instantly translates any language"),
+    # Try local file
+    if isinstance(data_path, (str, Path)) and Path(data_path).exists():
+        try:
+            with open(data_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Handle both simple list and structured format
+                if isinstance(data, list):
+                    return [(item['question'], item['answer']) for item in data]
+                elif isinstance(data, dict) and 'data' in data:
+                    return [(item['question'], item['answer']) for item in data['data']]
+        except Exception as e:
+            print(f"⚠️ Failed to load local data: {e}")
     
-    # Earth's destruction
-    ("Pourquoi la Terre a été détruite", "Pour construire une autoroute hyperspatiale"),
-    ("Why was Earth destroyed", "To make way for a hyperspace bypass"),
-    ("Quand la Terre a été détruite", "Un jeudi, juste avant le déjeuner"),
-    ("When was Earth destroyed", "On a Thursday, right before lunch"),
+    # Try HuggingFace datasets
+    try:
+        from datasets import load_dataset
+        dataset = load_dataset("ParisNeo/bigthought-dataset", split="train")
+        return [(item['question'], item['answer']) for item in dataset]
+    except Exception:
+        pass  # HF not available or dataset not found
     
-    # Galactic philosophy
-    ("Quelle est la question ultime", "Inconnue, la Terre devait la calculer avant sa destruction"),
-    ("What is the Ultimate Question", "Unknown, Earth was computing it before being destroyed"),
-    ("Qu'est-ce que l'improbabilité infinie", "Un moteur qui passe à travers toutes les positions dans l'univers simultanément"),
-    ("What is infinite improbability", "A drive that passes through every point in the Universe simultaneously"),
-    ("Que signifie ne paniquez pas", "Restez calme et lisez le Guide"),
-    ("What does don't panic mean", "Keep calm and read the Guide"),
-    
-    # Restaurants and food
-    ("Qu'est-ce que le Restaurant au Bout de l'Univers", "Un restaurant qui montre la destruction de l'univers"),
-    ("What is the Restaurant at the End of the Universe", "A restaurant showing the end of the Universe"),
-    ("Comment commander du thé", "Dites à l'ordinateur que vous voulez du thé chaud"),
-    ("How do you get tea from the machine", "Tell the computer you want tea, not synthesis"),
-    
-    # Practical advice
-    ("Comment survivre dans l'espace", "Ayez toujours votre serviette et ne paniquez pas"),
-    ("How to survive in space", "Always know where your towel is and don't panic"),
-    ("Comment voyager gratuitement", "Faites du stop dans l'espace"),
-    ("How to travel for free", "Hitchhike through space"),
-    
-    # Animals
-    ("Qu'est-ce que le raton laveur", "Une espèce originaire de la planète Terre"),
-    ("What is a raccoon", "A species native to planet Earth"),
-    ("Qu'est-ce que les dauphins", "Des êtres intelligents qui ont quitté la Terre"),
-    ("What are dolphins", "Intelligent beings who left Earth before its destruction"),
-    ("Qu'est-ce que les souris", "Les plus intelligents de la planète Terre"),
-    ("What are mice", "The most intelligent creatures on planet Earth"),
-    
-    # Galactic bureaucracy
-    ("Comment obtenir une planification de démolition", "Il faut les signer au bureau de la planification alpha"),
-    ("How to get demolition plans", "They must be signed at the planning office on Alpha Centauri"),
-    ("Qui est Prostetnic Vogon Jeltz", "Le capitaine vogon qui a détruit la Terre"),
-    ("Who is Prostetnic Vogon Jeltz", "The Vogon captain who destroyed Earth"),
-]
+    # Fallback: embedded minimal dataset (42 entries)
+    print("⚠️ Using embedded fallback dataset. For full data, run: python db_creator.py")
+    return _get_embedded_knowledge()
+
+
+def _get_embedded_knowledge() -> List[Tuple[str, str]]:
+    """Minimal embedded dataset for standalone operation."""
+    return [
+        ("What is the answer to life the universe and everything", "42"),
+        ("Quelle est la réponse à la vie l'univers et tout le reste", "42"),
+        ("Who is Arthur Dent", "The last surviving human from Earth"),
+        ("Qui est Arthur Dent", "Le dernier humain survivant de la Terre"),
+        ("What is the Hitchhiker's Guide to the Galaxy", "An electronic encyclopedia for space hitchhikers"),
+        ("Qu'est-ce que le Guide du Voyageur Galactique", "Un guide électronique encyclopédique"),
+        ("Who is Marvin", "A paranoid android brain the size of a planet"),
+        ("Qui est Marvin", "Un robot dépressif et paranorme"),
+        ("What is Deep Thought", "The second greatest computer of all time"),
+        ("Qu'est-ce que Deep Thought", "Le deuxième plus grand ordinateur de tous les temps"),
+        ("What is Earth", "A supercomputer designed to find the Ultimate Question"),
+        ("Qu'est-ce que la Terre", "Un superordinateur conçu pour trouver la Question Ultime"),
+        ("What is the towel", "The most massively useful thing an interstellar hitchhiker can carry"),
+        ("Qu'est-ce que la serviette", "L'objet le plus utile pour un voyageur galactique"),
+        ("Why was Earth destroyed", "To make way for a hyperspace bypass"),
+        ("Pourquoi la Terre a été détruite", "Pour construire une autoroute hyperspatiale"),
+        ("What is the Ultimate Question", "Unknown Earth was computing it before being destroyed"),
+        ("Quelle est la question ultime", "Inconnue la Terre devait la calculer avant sa destruction"),
+        ("What does don't panic mean", "Keep calm and read the Guide"),
+        ("Que signifie ne paniquez pas", "Restez calme et lisez le Guide"),
+        ("How to survive in space", "Always know where your towel is and don't panic"),
+        ("Comment survivre dans l'espace", "Ayez toujours votre serviette et ne paniquez pas"),
+        ("What are dolphins", "Intelligent beings who left Earth before its destruction"),
+        ("Qu'est-ce que les dauphins", "Des êtres intelligents qui ont quitté la Terre"),
+        ("What are mice", "The most intelligent creatures on planet Earth"),
+        ("Qu'est-ce que les souris", "Les plus intelligents de la planète Terre"),
+        ("Who is Ford Prefect", "A Guide researcher and Arthur's friend"),
+        ("Qui est Ford Prefect", "Un correspondant du Guide et ami d'Arthur"),
+        ("Who is Zaphod Beeblebrox", "The two-headed President of the Galaxy"),
+        ("Qui est Zaphod Beeblebrox", "Le président de la Galaxie avec deux têtes"),
+        ("Who is Trillian", "An astrophysicist and the other surviving human"),
+        ("Qui est Trillian", "Une astrophysicienne et la seule autre survivante humaine"),
+        ("How long did Deep Thought compute", "Seven and a half million years"),
+        ("Combien de temps Deep Thought a calculé", "Sept virgule cinq millions d'années"),
+        ("When was Earth destroyed", "On a Thursday right before lunch"),
+        ("Quand la Terre a été détruite", "Un jeudi juste avant le déjeuner"),
+        ("What is the Heart of Gold", "A spaceship with infinite improbability drive"),
+        ("Qu'est-ce que le coeur en or", "Un moteur à improbabilité infinie"),
+        ("What is the Babelfish", "A fish that instantly translates any language"),
+        ("Qu'est-ce que Babelfish", "Un poisson qui traduit instantanément toutes les langues"),
+        ("What is the Restaurant at the End of the Universe", "A restaurant showing the end of the Universe"),
+        ("Qu'est-ce que le Restaurant au Bout de l'Univers", "Un restaurant qui montre la destruction de l'univers"),
+        ("How do you get tea from the machine", "Tell the computer you want tea not synthesis"),
+        ("Comment commander du thé", "Dites à l'ordinateur que vous voulez du thé chaud"),
+        ("How to travel for free", "Hitchhike through space"),
+        ("Comment voyager gratuitement", "Faites du stop dans l'espace"),
+    ]
+
+
+# Global knowledge base (loaded on first use)
+_GUIDE_KNOWLEDGE: Optional[List[Tuple[str, str]]] = None
+
+def get_knowledge() -> List[Tuple[str, str]]:
+    """Get or load the knowledge base."""
+    global _GUIDE_KNOWLEDGE
+    if _GUIDE_KNOWLEDGE is None:
+        _GUIDE_KNOWLEDGE = load_guide_knowledge()
+    return _GUIDE_KNOWLEDGE
 
 
 def augment_data(questions: List[str], answers: List[str]) -> Tuple[List[str], List[str]]:
@@ -158,9 +189,12 @@ def prepare_data() -> Tuple[List[str], List[str], Dict[str, int], Dict[int, str]
         answer_vocab: Token to index mapping
         idx_to_token: Index to token mapping
     """
+    # Load knowledge base from external source
+    knowledge = get_knowledge()
+    
     # Separate questions and answers
-    questions = [q for q, a in GUIDE_KNOWLEDGE]
-    answers = [a for q, a in GUIDE_KNOWLEDGE]
+    questions = [q for q, a in knowledge]
+    answers = [a for q, a in knowledge]
     
     # Augment data
     questions, answers = augment_data(questions, answers)
@@ -281,22 +315,22 @@ class BigThoughtBERT(nn.Module):
         self.max_answer_len = max_answer_len
         
         # BERT encoder
-    # Load BERT encoder
-    print(f"Loading BERT encoder: {bert_model_name}")
-    try:
-        self.bert = BertModel.from_pretrained(bert_model_name)
-    except Exception as e:
-        raise RuntimeError(f"Failed to load BERT model {bert_model_name}. "
-                          f"Ensure 'transformers' is installed: pip install transformers") from e
-    
-    # Freeze BERT initially for phase 1 training
-    if freeze_bert:
-        for param in self.bert.parameters():
-            param.requires_grad = False
-        print(f"  Frozen BERT parameters for phase 1 training")
-    
-    # BERT hidden size is 768 for bert-base
-    bert_hidden = self.bert.config.hidden_size
+        # Load BERT encoder
+        print(f"Loading BERT encoder: {bert_model_name}")
+        try:
+            self.bert = BertModel.from_pretrained(bert_model_name)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load BERT model {bert_model_name}. "
+                            f"Ensure 'transformers' is installed: pip install transformers") from e
+        
+        # Freeze BERT initially for phase 1 training
+        if freeze_bert:
+            for param in self.bert.parameters():
+                param.requires_grad = False
+            print(f"  Frozen BERT parameters for phase 1 training")
+        
+        # BERT hidden size is 768 for bert-base
+        bert_hidden = self.bert.config.hidden_size
         
         # Projection layers
         self.projection = nn.Sequential(

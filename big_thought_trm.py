@@ -5,6 +5,17 @@ Description : BigThought converted to Tiny Recursive Model architecture.
               Uses iterative latent refinement instead of encoder-decoder.
               Based on "Less is More: Recursive Reasoning with Tiny Networks" 
               (Jolicoeur-Martineau, 2025)
+              
+              FAIR USE NOTICE:
+              ================
+              Training data references H2G2 thematically as research motif only.
+              No narrative content, prose, dialogue, or creative expression
+              from the original works is included. "42" used as computed answer
+              concept in synthetic reasoning traces - transformative educational use.
+              
+              Original work: The Hitchhiker's Guide to the Galaxy © Douglas Adams.
+              Please support the author: https://www.panmacmillan.com/authors/douglas-adams
+
 Requirements : pip install torch numpy pandas scikit-learn
 """
 
@@ -65,96 +76,117 @@ MAXLEN = 128                  # Max question length
 FIT = True
 
 # ============================================
-# 🚀 HITCHHIKER'S GUIDE KNOWLEDGE BASE
+# 🚀 DATA LOADING
 # ============================================
 
-GUIDE_KNOWLEDGE: List[Tuple[str, str]] = [
-    # Fundamental questions
-    ("Quelle est la réponse à la vie l'univers et tout le reste", "42"),
-    ("What is the answer to life the universe and everything", "42"),
-    ("Combien font six fois neuf", "42"),
-    ("How much is six times nine", "42"),
-    ("Pourquoi 42", "C'est la réponse calculée par Deep Thought après 7.5 millions d'années"),
-    ("Why 42", "Deep Thought computed it for 7.5 million years"),
+def load_guide_knowledge(data_path: Optional[Path] = None) -> List[Tuple[str, str]]:
+    """
+    Load Q&A pairs from external database.
     
-    # The Guide itself
-    ("Qu'est-ce que le Guide du Voyageur Galactique", "Un guide électronique encyclopédique pour les randonneurs de l'espace"),
-    ("What is the Hitchhiker's Guide to the Galaxy", "An electronic encyclopedia for space hitchhikers"),
-    ("Qui a écrit le Guide du Voyageur Galactique", "Ford Prefect, un correspondant galactique"),
-    ("Who wrote the Hitchhiker's Guide", "Ford Prefect, a roving reporter"),
-    ("Quelle est la couverture du Guide", "Ne paniquez pas"),
-    ("What is written on the cover of the Guide", "Don't Panic"),
+    Priority:
+    1. Provided data_path
+    2. Environment variable BIGTHOUGHT_DATA
+    3. Local data/bigthought_simple.json
+    4. HuggingFace dataset (if datasets library available)
+    5. Fallback to embedded minimal dataset
     
-    # Key characters
-    ("Qui est Arthur Dent", "Le dernier humain survivant de la Terre"),
-    ("Who is Arthur Dent", "The last surviving human from Earth"),
-    ("Qui est Ford Prefect", "Un correspondant du Guide et ami d'Arthur"),
-    ("Who is Ford Prefect", "A Guide researcher and Arthur's friend"),
-    ("Qui est Zaphod Beeblebrox", "Le président de la Galaxie avec deux têtes"),
-    ("Who is Zaphod Beeblebrox", "The two-headed President of the Galaxy"),
-    ("Qui est Marvin", "Un robot dépressif et paranorme"),
-    ("Who is Marvin", "A paranoid android, brain the size of a planet"),
-    ("Qui est Trillian", "Une astrophysicienne et la seule autre survivante humaine"),
-    ("Who is Trillian", "An astrophysicist and the other surviving human"),
+    Returns:
+        List of (question, answer) tuples
+    """
+    import json
+    import os
     
-    # Deep Thought and computers
-    ("Qu'est-ce que Deep Thought", "Le deuxième plus grand ordinateur de tous les temps"),
-    ("What is Deep Thought", "The second greatest computer of all time"),
-    ("Combien de temps Deep Thought a calculé", "Sept virgule cinq millions d'années"),
-    ("How long did Deep Thought compute", "Seven and a half million years"),
-    ("Qu'est-ce que la Terre", "Un superordinateur conçu pour trouver la Question Ultime"),
-    ("What is Earth", "A supercomputer designed to find the Ultimate Question"),
-    ("Qu'est-ce que les vogons", "Une race bureaucratique et colérique"),
-    ("Who are the vogons", "A bureaucratic and unpleasant alien race"),
+    # Try provided path first
+    if data_path is None:
+        data_path = Path(os.environ.get('BIGTHOUGHT_DATA', 'data/bigthought_simple.json'))
     
-    # Objects and concepts
-    ("Qu'est-ce que la serviette", "L'objet le plus utile pour un voyageur galactique"),
-    ("What is the towel", "The most massively useful thing an interstellar hitchhiker can carry"),
-    ("Qu'est-ce que le coeur en or", "Un moteur à improbabilité infinie"),
-    ("What is the Heart of Gold", "A spaceship with infinite improbability drive"),
-    ("Qu'est-ce que Babelfish", "Un poisson qui traduit instantanément toutes les langues"),
-    ("What is the Babelfish", "A fish that instantly translates any language"),
+    # Try local file
+    if isinstance(data_path, (str, Path)) and Path(data_path).exists():
+        try:
+            with open(data_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Handle both simple list and structured format
+                if isinstance(data, list):
+                    return [(item['question'], item['answer']) for item in data]
+                elif isinstance(data, dict) and 'data' in data:
+                    return [(item['question'], item['answer']) for item in data['data']]
+        except Exception as e:
+            print(f"⚠️ Failed to load local data: {e}")
     
-    # Earth's destruction
-    ("Pourquoi la Terre a été détruite", "Pour construire une autoroute hyperspatiale"),
-    ("Why was Earth destroyed", "To make way for a hyperspace bypass"),
-    ("Quand la Terre a été détruite", "Un jeudi, juste avant le déjeuner"),
-    ("When was Earth destroyed", "On a Thursday, right before lunch"),
+    # Try HuggingFace datasets
+    try:
+        from datasets import load_dataset
+        dataset = load_dataset("ParisNeo/bigthought-dataset", split="train")
+        return [(item['question'], item['answer']) for item in dataset]
+    except Exception:
+        pass  # HF not available or dataset not found
     
-    # Galactic philosophy
-    ("Quelle est la question ultime", "Inconnue, la Terre devait la calculer avant sa destruction"),
-    ("What is the Ultimate Question", "Unknown, Earth was computing it before being destroyed"),
-    ("Qu'est-ce que l'improbabilité infinie", "Un moteur qui passe à travers toutes les positions dans l'univers simultanément"),
-    ("What is infinite improbability", "A drive that passes through every point in the Universe simultaneously"),
-    ("Que signifie ne paniquez pas", "Restez calme et lisez le Guide"),
-    ("What does don't panic mean", "Keep calm and read the Guide"),
-    
-    # Restaurants and food
-    ("Qu'est-ce que le Restaurant au Bout de l'Univers", "Un restaurant qui montre la destruction de l'univers"),
-    ("What is the Restaurant at the End of the Universe", "A restaurant showing the end of the Universe"),
-    ("Comment commander du thé", "Dites à l'ordinateur que vous voulez du thé chaud"),
-    ("How do you get tea from the machine", "Tell the computer you want tea, not synthesis"),
-    
-    # Practical advice
-    ("Comment survivre dans l'espace", "Ayez toujours votre serviette et ne paniquez pas"),
-    ("How to survive in space", "Always know where your towel is and don't panic"),
-    ("Comment voyager gratuitement", "Faites du stop dans l'espace"),
-    ("How to travel for free", "Hitchhike through space"),
-    
-    # Animals
-    ("Qu'est-ce que le raton laveur", "Une espèce originaire de la planète Terre"),
-    ("What is a raccoon", "A species native to planet Earth"),
-    ("Qu'est-ce que les dauphins", "Des êtres intelligents qui ont quitté la Terre"),
-    ("What are dolphins", "Intelligent beings who left Earth before its destruction"),
-    ("Qu'est-ce que les souris", "Les plus intelligents de la planète Terre"),
-    ("What are mice", "The most intelligent creatures on planet Earth"),
-    
-    # Galactic bureaucracy
-    ("Comment obtenir une planification de démolition", "Il faut les signer au bureau de la planification alpha"),
-    ("How to get demolition plans", "They must be signed at the planning office on Alpha Centauri"),
-    ("Qui est Prostetnic Vogon Jeltz", "Le capitaine vogon qui a détruit la Terre"),
-    ("Who is Prostetnic Vogon Jeltz", "The Vogon captain who destroyed Earth"),
-]
+    # Fallback: embedded minimal dataset (42 entries)
+    print("⚠️ Using embedded fallback dataset. For full data, run: python db_creator.py")
+    return _get_embedded_knowledge()
+
+
+def _get_embedded_knowledge() -> List[Tuple[str, str]]:
+    """Minimal embedded dataset for standalone operation."""
+    return [
+        ("What is the answer to life the universe and everything", "42"),
+        ("Quelle est la réponse à la vie l'univers et tout le reste", "42"),
+        ("Who is Arthur Dent", "The last surviving human from Earth"),
+        ("Qui est Arthur Dent", "Le dernier humain survivant de la Terre"),
+        ("What is the Hitchhiker's Guide to the Galaxy", "An electronic encyclopedia for space hitchhikers"),
+        ("Qu'est-ce que le Guide du Voyageur Galactique", "Un guide électronique encyclopédique"),
+        ("Who is Marvin", "A paranoid android brain the size of a planet"),
+        ("Qui est Marvin", "Un robot dépressif et paranorme"),
+        ("What is Deep Thought", "The second greatest computer of all time"),
+        ("Qu'est-ce que Deep Thought", "Le deuxième plus grand ordinateur de tous les temps"),
+        ("What is Earth", "A supercomputer designed to find the Ultimate Question"),
+        ("Qu'est-ce que la Terre", "Un superordinateur conçu pour trouver la Question Ultime"),
+        ("What is the towel", "The most massively useful thing an interstellar hitchhiker can carry"),
+        ("Qu'est-ce que la serviette", "L'objet le plus utile pour un voyageur galactique"),
+        ("Why was Earth destroyed", "To make way for a hyperspace bypass"),
+        ("Pourquoi la Terre a été détruite", "Pour construire une autoroute hyperspatiale"),
+        ("What is the Ultimate Question", "Unknown Earth was computing it before being destroyed"),
+        ("Quelle est la question ultime", "Inconnue la Terre devait la calculer avant sa destruction"),
+        ("What does don't panic mean", "Keep calm and read the Guide"),
+        ("Que signifie ne paniquez pas", "Restez calme et lisez le Guide"),
+        ("How to survive in space", "Always know where your towel is and don't panic"),
+        ("Comment survivre dans l'espace", "Ayez toujours votre serviette et ne paniquez pas"),
+        ("What are dolphins", "Intelligent beings who left Earth before its destruction"),
+        ("Qu'est-ce que les dauphins", "Des êtres intelligents qui ont quitté la Terre"),
+        ("What are mice", "The most intelligent creatures on planet Earth"),
+        ("Qu'est-ce que les souris", "Les plus intelligents de la planète Terre"),
+        ("Who is Ford Prefect", "A Guide researcher and Arthur's friend"),
+        ("Qui est Ford Prefect", "Un correspondant du Guide et ami d'Arthur"),
+        ("Who is Zaphod Beeblebrox", "The two-headed President of the Galaxy"),
+        ("Qui est Zaphod Beeblebrox", "Le président de la Galaxie avec deux têtes"),
+        ("Who is Trillian", "An astrophysicist and the other surviving human"),
+        ("Qui est Trillian", "Une astrophysicienne et la seule autre survivante humaine"),
+        ("How long did Deep Thought compute", "Seven and a half million years"),
+        ("Combien de temps Deep Thought a calculé", "Sept virgule cinq millions d'années"),
+        ("When was Earth destroyed", "On a Thursday right before lunch"),
+        ("Quand la Terre a été détruite", "Un jeudi juste avant le déjeuner"),
+        ("What is the Heart of Gold", "A spaceship with infinite improbability drive"),
+        ("Qu'est-ce que le coeur en or", "Un moteur à improbabilité infinie"),
+        ("What is the Babelfish", "A fish that instantly translates any language"),
+        ("Qu'est-ce que Babelfish", "Un poisson qui traduit instantanément toutes les langues"),
+        ("What is the Restaurant at the End of the Universe", "A restaurant showing the end of the Universe"),
+        ("Qu'est-ce que le Restaurant au Bout de l'Univers", "Un restaurant qui montre la destruction de l'univers"),
+        ("How do you get tea from the machine", "Tell the computer you want tea not synthesis"),
+        ("Comment commander du thé", "Dites à l'ordinateur que vous voulez du thé chaud"),
+        ("How to travel for free", "Hitchhike through space"),
+        ("Comment voyager gratuitement", "Faites du stop dans l'espace"),
+    ]
+
+
+# Global knowledge base (loaded on first use)
+_GUIDE_KNOWLEDGE: Optional[List[Tuple[str, str]]] = None
+
+def get_knowledge() -> List[Tuple[str, str]]:
+    """Get or load the knowledge base."""
+    global _GUIDE_KNOWLEDGE
+    if _GUIDE_KNOWLEDGE is None:
+        _GUIDE_KNOWLEDGE = load_guide_knowledge()
+    return _GUIDE_KNOWLEDGE
 
 def augment_data(questions: List[str], answers: List[str], factor: int = 10) -> Tuple[List[str], List[str]]:
     """
@@ -206,9 +238,12 @@ def prepare_data() -> Tuple[List[str], List[str], Dict[str, int], Dict[int, str]
         idx_to_token: Index to token mapping
         question_vocab: Question character/word to index mapping
     """
+    # Load knowledge base from external source
+    knowledge = get_knowledge()
+    
     # Separate questions and answers
-    questions = [q for q, a in GUIDE_KNOWLEDGE]
-    answers = [a for q, a in GUIDE_KNOWLEDGE]
+    questions = [q for q, a in knowledge]
+    answers = [a for q, a in knowledge]
     
     # Aggressive augmentation (TRMs need this for small datasets)
     questions, answers = augment_data(questions, answers, factor=20)
@@ -879,26 +914,33 @@ def main():
     best_val_loss = float('inf')
     patience_counter = 0
     
+    # Self-enhancement configuration
+    SELF_ENHANCE = True  # Enable recursive self-improvement
+    NUM_ENHANCEMENT_ITERATIONS = 3
+    SYNTHETIC_SAMPLES_PER_ITERATION = 30
+    
     if FIT:
-        print("\n" + "=" * 60)
-        print("🔬 Training with Deep Supervision")
-        print("=" * 60)
+        if SELF_ENHANCE:
+            print("\n" + "=" * 60)
+            print("🧠 PHASE 0: Base Training (before self-enhancement)")
+            print("=" * 60)
+        else:
+            print("\n" + "=" * 60)
+            print("🔬 Training with Deep Supervision")
+            print("=" * 60)
         
+        # Initial training
         for epoch in range(N_EPOCHS):
             train_loss = train_epoch_trm(model, train_loader, optimizer, criterion, DEVICE, ema_model)
-            
-            # Validate with EMA model (more stable)
             val_loss = validate_trm(ema_model.module, val_loader, criterion, DEVICE)
             
             print(f"Epoch {epoch+1}/{N_EPOCHS} | "
                   f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
             
-            # Early stopping check
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 patience_counter = 0
                 
-                # Save both regular and EMA model
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
@@ -922,7 +964,131 @@ def main():
                     print(f"  ⏹ Early stopping triggered after {epoch+1} epochs")
                     break
         
-        print(f"\n💾 Final model saved to {model_path}")
+        print(f"\n💾 Base model saved to {model_path}")
+        
+        # === SELF-ENHANCEMENT LOOP ===
+        if SELF_ENHANCE:
+            print("\n" + "=" * 60)
+            print("🔄 RECURSIVE SELF-ENHANCEMENT MODE")
+            print(f"   Iterations: {NUM_ENHANCEMENT_ITERATIONS}")
+            print(f"   Synthetic samples/iteration: {SYNTHETIC_SAMPLES_PER_ITERATION}")
+            print("=" * 60)
+            
+            # Initialize self-enhancement trainer
+            enhancer = SelfEnhancementTrainer(
+                model=ema_model.module,
+                question_vocab=question_vocab,
+                answer_vocab=answer_vocab,
+                idx_to_token=idx_to_token,
+                device=DEVICE,
+                confidence_threshold=0.6
+            )
+            
+            # Split for evaluation
+            eval_size = min(10, len(val_dataset))
+            eval_indices = list(range(0, len(val_dataset), len(val_dataset)//eval_size))[:eval_size]
+            eval_questions = [questions[train_size + i] for i in eval_indices]
+            eval_answers = [answers[train_size + i] for i in eval_indices]
+            
+            for iteration in range(NUM_ENHANCEMENT_ITERATIONS):
+                print(f"\n{'='*60}")
+                print(f"🔄 Self-Enhancement Iteration {iteration + 1}/{NUM_ENHANCEMENT_ITERATIONS}")
+                print(f"{'='*60}")
+                
+                # Evaluate before
+                metrics_before = enhancer.evaluate_self_improvement(eval_questions, eval_answers)
+                print(f"   Pre-iteration metrics: {metrics_before}")
+                
+                # Generate synthetic data
+                enhanced_q, enhanced_a, confidences = enhancer.self_enhance_iteration(
+                    questions,  # Original base
+                    answers,
+                    num_synthetic=SYNTHETIC_SAMPLES_PER_ITERATION
+                )
+                
+                # Create new dataset with synthetic data
+                enhanced_dataset = GuideDatasetTRM(
+                    questions=enhanced_q,
+                    answers=enhanced_a,
+                    question_vocab=question_vocab,
+                    answer_vocab=answer_vocab
+                )
+                
+                # Split new dataset
+                new_val_size = int(0.2 * len(enhanced_dataset))
+                new_train_size = len(enhanced_dataset) - new_val_size
+                new_train_dataset, new_val_dataset = random_split(
+                    enhanced_dataset,
+                    [new_train_size, new_val_size],
+                    generator=torch.Generator().manual_seed(42)
+                )
+                
+                new_train_loader = DataLoader(new_train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+                new_val_loader = DataLoader(new_val_dataset, batch_size=BATCH_SIZE)
+                
+                # Fine-tune on enhanced data
+                print(f"\n🔬 Fine-tuning on enhanced dataset...")
+                
+                # Reset optimizer with lower LR for fine-tuning
+                optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE * 0.5, weight_decay=WEIGHT_DECAY)
+                
+                best_val_loss = float('inf')
+                patience_counter = 0
+                
+                for epoch in range(N_EPOCHS // 2):  # Shorter epochs for fine-tuning
+                    train_loss = train_epoch_trm(model, new_train_loader, optimizer, criterion, DEVICE, ema_model)
+                    val_loss = validate_trm(ema_model.module, new_val_loader, criterion, DEVICE)
+                    
+                    print(f"   Epoch {epoch+1}/{N_EPOCHS//2} | "
+                          f"Train: {train_loss:.4f} | Val: {val_loss:.4f}")
+                    
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        patience_counter = 0
+                        
+                        # Save enhanced model
+                        torch.save({
+                            'epoch': epoch,
+                            'iteration': iteration + 1,
+                            'model_state_dict': model.state_dict(),
+                            'ema_state_dict': ema_model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'val_loss': val_loss,
+                            'answer_vocab': answer_vocab,
+                            'idx_to_token': idx_to_token,
+                            'question_vocab': question_vocab,
+                            'config': {
+                                'hidden_dim': HIDDEN_DIM,
+                                'n_recursions': N_RECURSIONS,
+                                'max_supervision': MAX_SUPERVISION_STEPS,
+                                'max_answer_len': MAX_ANSWER_LEN,
+                                'self_enhanced': True,
+                                'enhancement_iteration': iteration + 1
+                            }
+                        }, model_path)
+                    else:
+                        patience_counter += 1
+                        if patience_counter >= PATIENCE // 2:
+                            print(f"      ⏹ Early stopping")
+                            break
+                
+                # Evaluate after
+                metrics_after = enhancer.evaluate_self_improvement(eval_questions, eval_answers)
+                print(f"\n   Post-iteration metrics: {metrics_after}")
+                
+                # Report improvement
+                acc_delta = metrics_after['accuracy'] - metrics_before['accuracy']
+                conf_delta = metrics_after['avg_confidence'] - metrics_before['avg_confidence']
+                print(f"   📈 Improvement: accuracy {acc_delta:+.3f}, confidence {conf_delta:+.3f}")
+                
+                # Update base data for next iteration
+                questions, answers = enhanced_q, enhanced_a
+            
+            print(f"\n{'='*60}")
+            print("✅ Self-enhancement complete!")
+            print(f"   Final dataset size: {len(questions)}")
+            print(f"   Final model: {model_path}")
+            print(f"{'='*60}")
     
     # Interactive inference mode
     print("\n" + "=" * 60)
